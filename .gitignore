@@ -1,0 +1,19 @@
+# своё у каждого пользователя
+config.json
+config.json.bak
+secrets.json
+secrets.json.bak
+projects/
+backups/
+build/
+tools/
+*.log
+selftest.txt
+__pycache__/
+*.pyc
+dist/
+*.tmp
+# архивы — только в release/
+*.zip
+!release/*.zip
+engine/bin/*.lib

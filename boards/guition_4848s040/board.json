@@ -1,0 +1,20 @@
+{
+  "id": "guition_4848s040",
+  "name": "Guition ESP32-4848S040",
+  "short": "S3 4″ 480×480",
+  "maker": "Guition",
+  "chip": "ESP32-S3",
+  "screen": "4″ IPS 480×480, ST7701 (RGB)",
+  "touch": "GT911",
+  "w": 480,
+  "h": 480,
+  "shape": "rect",
+  "psram": 8,
+  "flash": 16,
+  "core": "3.3.7",
+  "fqbn": "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,FlashMode=dio,PartitionScheme=app3M_fat9M_16MB,CDCOnBoot=default,UploadSpeed=921600",
+  "usb": ["1A86:7523", "1A86:55D3", "10C4:EA60", "303A:1001"],
+  "esptool_chip": "esp32s3",
+  "port": "port.h",
+  "notes": "Порт USB — через мост UART (CH340/CP210x). Пины и тайминги — из прошивки ESP32_S3_Panel 2.61. Сборка arduino-cli (без XIP из PSRAM): при записи во флеш (сохранение настроек) кадр может на миг дрогнуть."
+}

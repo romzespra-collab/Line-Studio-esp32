@@ -1,0 +1,21 @@
+{
+  "id": "guition_jc4880p443c",
+  "name": "Guition JC4880P443C",
+  "short": "P4 4.3″ 800×480",
+  "maker": "Guition",
+  "chip": "ESP32-P4",
+  "screen": "4.3″ IPS 800×480, ST7701S (MIPI-DSI)",
+  "touch": "GT911",
+  "w": 800,
+  "h": 480,
+  "shape": "rect",
+  "psram": 32,
+  "flash": 16,
+  "core": "3.3.7",
+  "fqbn": "esp32:esp32:esp32p4:ChipVariant=prev3,PSRAM=enabled,FlashSize=16M,FlashMode=dio,FlashFreq=80,PartitionScheme=app3M_fat9M_16MB,USBMode=hwcdc,CDCOnBoot=cdc,UploadSpeed=921600",
+  "chip_variants": {"ES rev1 (до v3)": "ChipVariant=prev3", "v3 и новее": "ChipVariant=postv3"},
+  "usb": ["303A:1001"],
+  "esptool_chip": "esp32p4",
+  "port": "port.h",
+  "notes": "Wi-Fi идёт через ESP32-C6 (ESP-Hosted): нужна совместимая прошивка C6. Ревизия чипа ES rev1 — ChipVariant=prev3 (как в ESP32_P4_Panel)."
+}

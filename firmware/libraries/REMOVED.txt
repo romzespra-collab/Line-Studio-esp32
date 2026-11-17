@@ -1,0 +1,1 @@
+— из вложенных библиотек убрано лишнее: шрифты u8g2 Arduino_GFX (только при U8g2lib), thorvg LVGL (LV_USE_THORVG 0)
