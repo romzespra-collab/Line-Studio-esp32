@@ -1,4 +1,4 @@
-"""line_studio.pyw  v0.1.0 — запуск LineStudio двойным щелчком (без консоли)."""
+"""line_studio.pyw  v0.2.0 — запуск LineStudio двойным щелчком (без консоли)."""
 import os
 import sys
 

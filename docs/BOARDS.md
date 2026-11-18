@@ -26,6 +26,7 @@ static bool lsb_touch(int *x, int *y);          // палец: true — нажа
 static void lsb_brightness(int pct);            // 0..100
 ```
 Экраны — через Arduino_GFX 1.6.7 (`firmware/libraries`): сотни контроллеров (SPI, QSPI, RGB, DSI). Тач GT911 —
-`firmware/drivers/ls_gt911.h`; другие (XPT2046, CST816, FT6x36) — добавить драйвер рядом.
+`firmware/drivers/ls_gt911.h`, XPT2046 — `ls_xpt2046.h`; другие (CST816, FT6x36) — добавить драйвер рядом.
+Плата без PSRAM: `#define LSB_FONT_CACHE 32` и `#define LSB_LINE_MAX (24 * 1024)` в port.h.
 
 Проверить: новый проект на этой плате → «Залить» (сборка без платы тоже проверяет порт).

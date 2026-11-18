@@ -1,6 +1,7 @@
-"""icons.py  v0.1.0 — значки LineStudio, нарисованные QPainter-ом (без эмодзи и файлов).
+"""icons.py  v0.2.0 — значки LineStudio, нарисованные QPainter-ом (без эмодзи и файлов).
 
 Журнал:
+v0.2.0: значок, картинка, погода.
 v0.1.0: первая версия — блоки (часы, дата, стрелки, текст, плашка, кнопка, дуга, ползунок), режимы
         (правка, проба, карта), действия (отмена, повтор, молния, ⋯, солнце/луна, плюс, корзина, дом, экран, плата).
 """
@@ -64,6 +65,36 @@ def draw(p, kind, r, color):
         p.drawLine(P(3, 12), P(21, 12))
         p.setBrush(QColor(color))
         p.drawEllipse(P(14, 12), 3 * k, 3 * k)
+    elif kind == "icon":
+        path = QPainterPath()
+        for i in range(10):
+            r = 9.5 if i % 2 == 0 else 4
+            a = -math.pi / 2 + i * math.pi / 5
+            pt = P(12 + r * math.cos(a), 12.5 + r * math.sin(a))
+            if i == 0:
+                path.moveTo(pt)
+            else:
+                path.lineTo(pt)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif kind == "image":
+        p.drawRoundedRect(R(3, 4, 18, 16), 2.5 * k, 2.5 * k)
+        path = QPainterPath(P(5, 18))
+        path.lineTo(P(10, 12))
+        path.lineTo(P(13, 15))
+        path.lineTo(P(16, 11))
+        path.lineTo(P(19, 18))
+        p.drawPath(path)
+        p.drawEllipse(P(8.5, 8.5), 1.6 * k, 1.6 * k)
+    elif kind == "weather":
+        p.drawEllipse(P(9, 9), 4 * k, 4 * k)
+        path = QPainterPath(P(7, 20))
+        path.lineTo(P(19, 20))
+        path.arcTo(R(15, 12, 7, 8), -90, 180)
+        path.arcTo(R(9, 9, 9, 9), 20, 140)
+        path.arcTo(R(5, 13, 7, 7), 90, 180)
+        p.setBrush(QColor(color).darker(140))
+        p.drawPath(path)
     elif kind == "edit":
         path = QPainterPath(P(4, 20))
         path.lineTo(P(5, 15))

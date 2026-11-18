@@ -1,6 +1,7 @@
-"""line_studio.py  v0.1.0 — LineStudio: редактор экранов для плат ESP32 (ядро: запуск, настройки, журнал, проверка).
+"""line_studio.py  v0.2.0 — LineStudio: редактор экранов для плат ESP32 (ядро: запуск, настройки, журнал, проверка).
 
 Журнал:
+v0.2.0: значки, картинки, погода (open-meteo; на плате — по Wi-Fi), платы CYD (ST7789 и ILI9341).
 v0.1.0: первая версия — редактор экранов (Вид 2 «Пульт»): холст с превью из движка платы (LVGL в DLL),
         экраны/слои/блоки, свойства, Правка/Проба/Карта, Live по USB, «Залить» (arduino-cli + ядро ESP32),
         паспорта плат (boards/), Guition 4848S040 (S3) и JC4880P443C (P4).
@@ -18,7 +19,7 @@ import subprocess
 import sys
 
 APP_NAME = "LineStudio"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 REPO_OWNER = "romzespra-collab"
 REPO_NAME = "Line-Studio-esp32"
 
@@ -218,7 +219,7 @@ def selftest():
     chk("pyserial", lambda: importlib.import_module("serial") and "")
     chk("fontTools", lambda: importlib.import_module("fontTools.subset") and "")
     from modules import mod_build, mod_engine, mod_project
-    for m in ("mod_project", "mod_engine", "mod_build", "mod_link", "mod_stage"):
+    for m in ("mod_project", "mod_engine", "mod_build", "mod_link", "mod_stage", "mod_images", "mod_weather"):
         chk(m, lambda m=m: importlib.import_module("modules." + m) and "")
     chk("app.theme / рамка / обновление", lambda: [importlib.import_module("app." + m) for m in
                                                    ("theme", "window_frame", "int_field", "gh_update",

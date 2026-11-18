@@ -1,6 +1,8 @@
-"""mod_project.py  v0.1.0 — проект LineStudio: экраны и слои, каталог блоков, заготовки, проверка.
+"""mod_project.py  v0.2.0 — проект LineStudio: экраны и слои, каталог блоков, заготовки, проверка.
 
 Журнал:
+v0.2.0: блоки «Значок» (Material Icons, 2200+ штук, поиск по-русски для частых), «Картинка» (файлы проекта —
+        projects/<id>.assets/), «Погода» (строка / карточка, города из настроек проекта); заготовка «Погода».
 v0.1.0: первая версия — формат 1 (docs/FORMAT.md), 8 видов блоков, 5 заготовок экранов, чистка и проверка
         ссылок, отмена/повтор (история снимков).
 
@@ -75,7 +77,83 @@ CATALOG = {
                "defaults": {"source": "brightness", "value": 50, "color": "#4F8CFF", "track": "#2A2E38",
                             "knob": "#FFFFFF"}},
 }
+CATALOG["icon"] = {"name": "Значок", "icon": "icon", "group": "Основа", "size": (72, 72), "square": True,
+                   "props": [("icon", "iconpick", "Значок"), ("size", "int", "Размер", (8, 400)),
+                             ("color", "color", "Цвет")],
+                   "defaults": {"icon": "wb_sunny", "size": 64, "color": "#FFC93C"}}
+CATALOG["image"] = {"name": "Картинка", "icon": "image", "group": "Основа", "size": (200, 200),
+                    "props": [("asset", "asset", "Файл"),
+                              ("fit", "choice", "Вписать", (("cover", "Заполнить"), ("contain", "Целиком"),
+                                                            ("stretch", "Растянуть")))],
+                    "defaults": {"asset": "", "fit": "cover"}}
+CATALOG["weather"] = {"name": "Погода", "icon": "weather", "group": "Приборы", "size": (320, 80),
+                      "props": [("style", "choice", "Вид", (("line", "Строка"), ("card", "Карточка"))),
+                                ("city", "city", "Город"), ("font", "font", "Шрифт"),
+                                ("size", "int", "Размер", (8, 300)), ("color", "color", "Цвет"),
+                                ("muted", "color", "Цвет описания"), ("icon", "bool", "Значок погоды"),
+                                ("desc", "bool", "Описание"), ("city_name", "bool", "Название города")],
+                      "defaults": {"style": "line", "city": 0, "font": "medium", "size": 44, "color": "#FFFFFF",
+                                   "muted": "#9AA3B5", "icon": True, "desc": True, "city_name": False}}
 GROUPS = ("Время", "Основа", "Приборы")
+CITIES_DEFAULT = [{"name": "Киев", "lat": 50.4501, "lon": 30.5234}]
+
+# ---------- значки: Material Icons (fonts/MaterialIcons-Regular.*) ----------
+_ICONS = None
+ICON_RU = {
+    "wb_sunny": "солнце", "nights_stay": "ночь", "cloud": "облако", "water_drop": "капля вода",
+    "thermostat": "термометр температура", "ac_unit": "снежинка мороз", "air": "ветер воздух",
+    "umbrella": "зонт дождь", "thunderstorm": "гроза", "home": "дом", "settings": "настройки шестерня",
+    "lightbulb": "лампа свет", "power_settings_new": "питание вкл выкл", "bolt": "молния энергия",
+    "battery_full": "батарея полная", "battery_charging_full": "батарея зарядка", "battery_alert": "батарея мало",
+    "solar_power": "солнечная панель", "electric_bolt": "электричество", "wifi": "wi-fi сеть",
+    "wifi_off": "нет сети", "bluetooth": "bluetooth", "lock": "замок закрыто", "lock_open": "замок открыто",
+    "music_note": "музыка нота", "play_arrow": "играть плей", "pause": "пауза", "stop": "стоп",
+    "skip_next": "следующий", "skip_previous": "предыдущий", "volume_up": "громкость звук",
+    "volume_off": "без звука", "mic": "микрофон", "alarm": "будильник", "timer": "таймер", "schedule": "часы время",
+    "calendar_today": "календарь", "notifications": "уведомления колокол", "favorite": "сердце",
+    "star": "звезда", "phone": "телефон", "mail": "почта письмо", "chat": "сообщение", "photo_camera": "камера фото",
+    "videocam": "видеокамера", "tv": "телевизор", "router": "роутер", "sensors": "датчик",
+    "local_fire_department": "огонь отопление", "hot_tub": "ванна бойлер", "shower": "душ",
+    "kitchen": "холодильник кухня", "garage": "гараж", "door_front": "дверь", "window": "окно",
+    "directions_car": "машина", "directions_walk": "шаги ходьба", "fitness_center": "спорт",
+    "arrow_back": "назад стрелка", "arrow_forward": "вперёд стрелка", "expand_less": "вверх",
+    "expand_more": "вниз", "menu": "меню", "close": "закрыть крест", "check": "галочка готово",
+    "add": "плюс добавить", "remove": "минус", "refresh": "обновить", "search": "поиск", "info": "инфо",
+    "warning": "внимание", "error": "ошибка", "brightness_6": "яркость", "dark_mode": "тёмная тема",
+    "light_mode": "светлая тема", "speed": "скорость спидометр", "memory": "чип память", "storage": "диск",
+    "public": "интернет глобус", "location_on": "место точка карта", "navigation": "навигация",
+    "person": "человек", "group": "люди", "pets": "питомец", "spa": "лист растение", "eco": "эко лист",
+    "grass": "трава", "waves": "волны", "water": "вода", "toys": "вентилятор", "mode_fan_off": "вентилятор выкл",
+}
+
+
+def icons():
+    """{имя: код} из fonts/MaterialIcons-Regular.codepoints."""
+    global _ICONS
+    if _ICONS is None:
+        import os
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fonts",
+                            "MaterialIcons-Regular.codepoints")
+        _ICONS = {}
+        try:
+            for ln in open(path, encoding="utf-8"):
+                parts = ln.split()
+                if len(parts) == 2:
+                    _ICONS.setdefault(parts[0], int(parts[1], 16))
+        except OSError:
+            pass
+    return _ICONS
+
+
+def icon_char(name):
+    cp = icons().get(name)
+    return chr(cp) if cp else "?"
+
+
+def image_key(w):
+    """Ключ картинки: id файла, размер и вписывание — так она лежит в прошивке и в превью."""
+    return f"{w.get('asset', '')}@{w['w']}x{w['h']}{(w.get('fit') or 'cover')[0]}"
+
 COMMON = [("x", "int", "X", (-2000, 4000)), ("y", "int", "Y", (-2000, 4000)), ("w", "int", "Ширина", (0, 4000)),
           ("h", "int", "Высота", (0, 4000)), ("opa", "int", "Видимость, %", (0, 100))]
 
@@ -137,12 +215,22 @@ def tpl_settings(W, H):
     ])
 
 
+def tpl_weather(W, H):
+    s = min(W, H)
+    cw, ch = s * 70 // 100, s * 62 // 100
+    return screen("Погода", "#0B1320", [
+        widget("weather", (W - cw) // 2, (H - ch) // 2, w=cw, h=ch, style="card", size=max(24, s * 16 // 100),
+               city_name=True),
+    ])
+
+
 def tpl_blank(W, H):
     return screen("Пустой", "#000000", [])
 
 
 TEMPLATES = (("digital", "Цифровые часы", tpl_digital), ("ring", "Кольцо секунд", tpl_ring),
-             ("analog", "Стрелки", tpl_analog), ("settings", "Яркость", tpl_settings), ("blank", "Пустой", tpl_blank))
+             ("analog", "Стрелки", tpl_analog), ("weather", "Погода", tpl_weather),
+             ("settings", "Яркость", tpl_settings), ("blank", "Пустой", tpl_blank))
 
 
 def new_project(board, name="Мой экран"):
@@ -154,7 +242,8 @@ def new_project(board, name="Мой экран"):
     st["id"] = "bright"
     home["swipe"] = {"up": "bright"}
     return {"format": FORMAT, "name": name, "board": board["id"], "home": "main", "rev": 0,
-            "settings": {"lang": "ru", "zone": "Киев", "tz": ZONES["Киев"], "wifi": False, "brightness": 80},
+            "settings": {"lang": "ru", "zone": "Киев", "tz": ZONES["Киев"], "wifi": False, "brightness": 80,
+                         "cities": copy.deepcopy(CITIES_DEFAULT)},
             "screens": [home, st]}
 
 
@@ -170,6 +259,9 @@ def clean(p):
     st.setdefault("tz", ZONES.get(st["zone"], ZONES["Киев"]))
     st.setdefault("wifi", False)
     st.setdefault("brightness", 80)
+    if not isinstance(st.get("cities"), list) or not st["cities"]:
+        st["cities"] = copy.deepcopy(CITIES_DEFAULT)
+    p.setdefault("assets", {})
     scr = p.setdefault("screens", [])
     if not scr:
         scr.append(screen("Главный", sid="main"))
@@ -203,10 +295,15 @@ def clean(p):
 def problems(p, board=None):
     """Что не так (для журнала перед Load): список строк."""
     out = []
+    st = p.get("settings", {})
     for s in p.get("screens", []):
         for w in s.get("widgets", []):
             if w.get("type") not in CATALOG:
                 out.append(f"⚠ «{s['name']}»: неизвестный блок «{w.get('type')}» — плата его пропустит")
+            if w.get("type") == "weather" and not st.get("wifi"):
+                out.append(f"⚠ «{s['name']}»: погода без Wi-Fi — на плате будет «нет данных» (включите Wi-Fi в проекте)")
+            if w.get("type") == "image" and w.get("asset") not in p.get("assets", {}):
+                out.append(f"⚠ «{s['name']}» / «{w.get('name')}»: картинка не выбрана")
             if board:
                 if w["x"] >= board["w"] or w["y"] >= board["h"] or w["x"] + max(w["w"], 1) <= 0:
                     out.append(f"⚠ «{s['name']}» / «{w.get('name')}»: за краем экрана")
@@ -218,6 +315,14 @@ def runtime_json(p):
     q = {k: p[k] for k in ("format", "name", "home", "settings", "screens") if k in p}
     q = copy.deepcopy(q)
     q["settings"] = {"lang": p.get("settings", {}).get("lang", "ru")}
+    for s in q.get("screens", []):
+        s.pop("map", None)
+        for w in s.get("widgets", []):
+            w.pop("name", None)
+            if w.get("type") == "icon":
+                w["glyph"] = icon_char(w.get("icon", ""))
+            elif w.get("type") == "image":
+                w["src"] = image_key(w)
     return json.dumps(q, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -228,7 +333,26 @@ def used_chars(p):
         for w in s.get("widgets", []):
             for k in ("text", "format"):
                 chars.update(str(w.get(k, "")))
+    for c in p.get("settings", {}).get("cities", []):
+        chars.update(str(c.get("name", "")))
     return chars
+
+
+def used_icons(p):
+    """Значки проекта (символы шрифта icons)."""
+    out = set()
+    for s in p.get("screens", []):
+        for w in s.get("widgets", []):
+            if w.get("type") == "icon":
+                out.add(icon_char(w.get("icon", "")))
+            for k in ("text",):
+                out.update(c for c in str(w.get(k, "")) if 0xE000 <= ord(c) <= 0xF8FF)
+    out.discard("?")
+    return out
+
+
+def used_types(p):
+    return {w.get("type") for s in p.get("screens", []) for w in s.get("widgets", [])}
 
 
 def used_fonts(p):
@@ -237,6 +361,10 @@ def used_fonts(p):
         for w in s.get("widgets", []):
             if "font" in w:
                 f.add(w["font"])
+            if w.get("type") == "weather":
+                f.update(("medium", "bold"))
+    if used_icons(p):
+        f.add("icons")
     return f or {"medium"}
 
 

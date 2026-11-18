@@ -1,0 +1,20 @@
+{
+  "id": "cyd_2432s028_st7789",
+  "name": "CYD ESP32-2432S028 (ST7789, 2×USB)",
+  "short": "CYD 2.8″ ST7789",
+  "maker": "Sunton",
+  "chip": "ESP32",
+  "screen": "2.8″ TN 320×240, ST7789 (SPI)",
+  "touch": "XPT2046 (резистивный)",
+  "w": 320,
+  "h": 240,
+  "shape": "rect",
+  "psram": 0,
+  "flash": 4,
+  "core": "3.3.7",
+  "fqbn": "esp32:esp32:esp32:PartitionScheme=huge_app,FlashMode=dio,UploadSpeed=921600",
+  "usb": ["1A86:7523", "10C4:EA60", "1A86:55D4"],
+  "esptool_chip": "esp32",
+  "port": "port.h",
+  "notes": "Без PSRAM: Live — до 24 КБ проекта, картинки — только небольшие (в прошивке). Пины — как в ESP32_Screen 1.9.3. На плате не проверено: цвета (BGR/инверсия) и тач (LSB_TOUCH_MAP) — в port.h."
+}

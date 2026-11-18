@@ -1,6 +1,7 @@
-/* le_engine.c  v0.1.0 — движок превью LineStudio: тот же рантайм и LVGL, что на плате, в DLL для ПК.
+/* le_engine.c  v0.2.0 — движок превью LineStudio: тот же рантайм и LVGL, что на плате, в DLL для ПК.
  *
  * Журнал:
+ * v0.2.0: погода от редактора (le_weather), картинки (le_image / le_image_remove).
  * v0.1.0: первая версия — кадр RGB565 в памяти, палец мышью, своё время (живое или замороженное).
  *
  * Редактор (modules/mod_engine.py) зовёт через ctypes:
@@ -8,6 +9,7 @@
  */
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <time.h>
 #include "lvgl.h"
 #include "ls_runtime.h"
@@ -64,6 +66,15 @@ static int port_time(struct tm *out) {
 
 static void port_bright(int pct) { g_bright = pct; }
 
+#define LE_CITIES 8
+static ls_weather_t g_wx[LE_CITIES];
+
+static int port_weather(int city, ls_weather_t *out) {
+    if (city < 0 || city >= LE_CITIES || !g_wx[city].valid) return 0;
+    *out = g_wx[city];
+    return 1;
+}
+
 static void port_log(const char *m) {
     size_t L = strlen(g_log), M = strlen(m);
     if (L + M + 2 >= sizeof g_log) { g_log[0] = 0; L = 0; }
@@ -79,7 +90,7 @@ LE_API int le_init(int w, int h) {
     if (!g_inited) {
         lv_init();
         lv_tick_set_cb(tick_cb);
-        ls_port_t p = {port_time, port_bright, port_log};
+        ls_port_t p = {port_time, port_bright, port_log, port_weather};
         ls_init(&p);
         g_inited = 1;
     }
@@ -176,4 +187,60 @@ LE_API int le_rect(const char *wid, int *out4) {
     if (ls_widget_rect(wid, r)) return -1;
     for (int i = 0; i < 4; i++) out4[i] = (int)r[i];
     return 0;
+}
+
+/* Погода города city (от редактора: с open-meteo или пример). valid=0 — «нет данных». */
+LE_API void le_weather(int city, int valid, int temp10, int code, int tmin10, int tmax10, int wind10, int hum,
+                       int is_day, const char *name) {
+    if (city < 0 || city >= LE_CITIES) return;
+    ls_weather_t *w = &g_wx[city];
+    w->valid = valid;
+    w->temp10 = temp10;
+    w->code = code;
+    w->tmin10 = tmin10;
+    w->tmax10 = tmax10;
+    w->wind10 = wind10;
+    w->hum = hum;
+    w->is_day = is_day;
+    snprintf(w->city, sizeof w->city, "%s", name ? name : "");
+}
+
+/* Картинка: RGB565 (alpha=0) или RGB565A8 (alpha=1: w*h*2 цвета, затем w*h альфы). Данные копируются. */
+typedef struct { char key[64]; lv_image_dsc_t dsc; uint8_t *data; } le_img_t;
+#define LE_IMAGES 64
+static le_img_t g_imgs[LE_IMAGES];
+
+LE_API void le_image_remove(const char *key) {
+    for (int i = 0; i < LE_IMAGES; i++)
+        if (g_imgs[i].data && !strcmp(g_imgs[i].key, key)) {
+            ls_image_remove(key);
+            lv_image_cache_drop(&g_imgs[i].dsc);
+            free(g_imgs[i].data);
+            memset(&g_imgs[i], 0, sizeof g_imgs[i]);
+        }
+}
+
+LE_API int le_image(const char *key, int w, int h, int alpha, const void *data, int len) {
+    int need = w * h * (alpha ? 3 : 2);
+    if (w <= 0 || h <= 0 || len < need) return -1;
+    le_image_remove(key);
+    for (int i = 0; i < LE_IMAGES; i++)
+        if (!g_imgs[i].data) {
+            le_img_t *m = &g_imgs[i];
+            m->data = (uint8_t *)malloc((size_t)need);
+            if (!m->data) return -2;
+            memcpy(m->data, data, (size_t)need);
+            snprintf(m->key, sizeof m->key, "%s", key);
+            memset(&m->dsc, 0, sizeof m->dsc);
+            m->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+            m->dsc.header.cf = alpha ? LV_COLOR_FORMAT_RGB565A8 : LV_COLOR_FORMAT_RGB565;
+            m->dsc.header.w = (uint32_t)w;
+            m->dsc.header.h = (uint32_t)h;
+            m->dsc.header.stride = (uint32_t)w * 2;
+            m->dsc.data_size = (uint32_t)need;
+            m->dsc.data = m->data;
+            ls_image_add(m->key, &m->dsc);
+            return 0;
+        }
+    return -3;
 }

@@ -1,6 +1,9 @@
-/* ls_runtime.c  v0.1.0 — рантайм LineStudio (см. ls_runtime.h).
+/* ls_runtime.c  v0.2.0 — рантайм LineStudio (см. ls_runtime.h).
  *
  * Журнал:
+ * v0.2.0: значки (шрифт Material Icons, любой размер; запасной шрифт у всех текстов — значок прямо в тексте),
+ *         картинки (RGB565 / RGB565A8 из прошивки или редактора), погода (рисованные значки по коду WMO,
+ *         «строка» и «карточка», несколько городов), размер кэша букв (ls_font_cache — для плат без PSRAM).
  * v0.1.0: первая версия. Виджеты: label, clock, date, rect, arc, analog, button, slider.
  *         Переходы между экранами (fade/left/right/up/down), свайпы экрана, «назад» свайпом вправо,
  *         шрифты TTF (tiny_ttf) любого размера с кириллицей, формат времени {HH}:{mm} и т.п.
@@ -24,8 +27,10 @@
 #define LS_MAX_FONTS 8
 #define LS_MAX_SIZES 64
 #define LS_STACK 16
+#define LS_MAX_IMAGES 64
+#define LS_MAX_CITIES 8
 
-enum { K_CLOCK = 1, K_DATE, K_ARC, K_ANALOG, K_SLIDER };
+enum { K_CLOCK = 1, K_DATE, K_ARC, K_ANALOG, K_SLIDER, K_WEATHER };
 enum { SRC_STATIC = 0, SRC_SECONDS, SRC_MINUTES, SRC_HOURS, SRC_DAY, SRC_BRIGHT };
 
 typedef struct {
@@ -40,6 +45,9 @@ typedef struct {
     const char *fmt;
     uint8_t ticks, secs;
     lv_color_t c_face, c_ticks, c_hour, c_min, c_sec;
+    lv_obj_t *l1, *l2, *l3;      /* погода: температура, описание, город */
+    uint32_t stamp;              /* погода: что показано */
+    uint8_t card, icon_sz;
 } ls_dyn_t;
 
 typedef struct { const char *name; const void *data; size_t len; } ls_fontdata_t;
@@ -61,6 +69,9 @@ static ls_fontdata_t g_fonts[LS_MAX_FONTS];
 static int g_nfonts;
 static ls_fontsize_t g_sizes[LS_MAX_SIZES];
 static int g_nsizes;
+static int g_font_cache = 128;
+static struct { char key[64]; const lv_image_dsc_t *dsc; } g_img[LS_MAX_IMAGES];
+static int g_nimg;
 
 /* ---------- мелочи ---------- */
 static void say(const char *fmt, ...) {
@@ -102,6 +113,8 @@ void ls_font_add(const char *name, const void *ttf, size_t len) {
     g_nfonts++;
 }
 
+void ls_font_cache(int glyphs) { g_font_cache = clampi(glyphs, 8, 1024); }
+
 static const lv_font_t *font_get(const char *name, int size) {
     int fi = -1;
     for (int i = 0; i < g_nfonts; i++)
@@ -112,12 +125,18 @@ static const lv_font_t *font_get(const char *name, int size) {
     for (int i = 0; i < g_nsizes; i++)
         if (g_sizes[i].font == fi && g_sizes[i].size == size) return g_sizes[i].f;
     if (g_nsizes >= LS_MAX_SIZES) return LV_FONT_DEFAULT;
-    lv_font_t *f = lv_tiny_ttf_create_data_ex(g_fonts[fi].data, g_fonts[fi].len, size, LV_FONT_KERNING_NORMAL, 128);
+    lv_font_t *f = lv_tiny_ttf_create_data_ex(g_fonts[fi].data, g_fonts[fi].len, size, LV_FONT_KERNING_NORMAL,
+                                              g_font_cache);
     if (!f) return LV_FONT_DEFAULT;
     g_sizes[g_nsizes].font = fi;
     g_sizes[g_nsizes].size = size;
     g_sizes[g_nsizes].f = f;
     g_nsizes++;
+    /* значки — запасной шрифт у текста: значок можно вставить прямо в надпись */
+    if (strcmp(g_fonts[fi].name, "icons")) {
+        for (int i = 0; i < g_nfonts; i++)
+            if (!strcmp(g_fonts[i].name, "icons")) { f->fallback = font_get("icons", size); break; }
+    }
     return f;
 }
 
@@ -566,6 +585,317 @@ static lv_obj_t *mk_analog(lv_obj_t *p, const lsJSON *w) {
     return o;
 }
 
+/* ---------- значок (шрифт icons) ---------- */
+static lv_obj_t *mk_icon(lv_obj_t *p, const lsJSON *w) {
+    lv_obj_t *o = lv_label_create(p);
+    lv_obj_remove_style_all(o);
+    int size = jint(w, "size", 48);
+    lv_obj_set_style_text_font(o, font_get("icons", size), 0);
+    lv_obj_set_style_text_color(o, jcolor(w, "color", 0xFFFFFF), 0);
+    lv_obj_set_style_text_align(o, LV_TEXT_ALIGN_CENTER, 0);
+    place(o, w, 0);
+    int hh = jint(w, "h", 0);
+    if (hh > 0) {
+        const lv_font_t *f = lv_obj_get_style_text_font(o, 0);
+        int pad = (hh - lv_font_get_line_height(f)) / 2;
+        lv_obj_set_style_pad_top(o, pad > 0 ? pad : 0, 0);
+    }
+    lv_label_set_text(o, jstr(w, "glyph", "?"));
+    return o;
+}
+
+/* ---------- картинки ---------- */
+void ls_image_add(const char *key, const lv_image_dsc_t *dsc) {
+    for (int i = 0; i < g_nimg; i++)
+        if (!strcmp(g_img[i].key, key)) { g_img[i].dsc = dsc; return; }
+    if (g_nimg >= LS_MAX_IMAGES) return;
+    snprintf(g_img[g_nimg].key, sizeof g_img[0].key, "%s", key);
+    g_img[g_nimg].dsc = dsc;
+    g_nimg++;
+}
+
+void ls_image_remove(const char *key) {
+    for (int i = 0; i < g_nimg; i++)
+        if (!strcmp(g_img[i].key, key)) {
+            g_img[i] = g_img[--g_nimg];
+            return;
+        }
+}
+
+static const lv_image_dsc_t *image_get(const char *key) {
+    if (!key) return NULL;
+    for (int i = 0; i < g_nimg; i++)
+        if (!strcmp(g_img[i].key, key)) return g_img[i].dsc;
+    return NULL;
+}
+
+static lv_obj_t *mk_image(lv_obj_t *p, const lsJSON *w) {
+    const lv_image_dsc_t *dsc = image_get(jstr(w, "src", NULL));
+    if (!dsc) {   /* нет данных (Live до заливки): серая рамка */
+        lv_obj_t *o = lv_obj_create(p);
+        lv_obj_remove_style_all(o);
+        place(o, w, 0);
+        lv_obj_set_style_bg_color(o, lv_color_hex(0x2A2E38), 0);
+        lv_obj_set_style_bg_opa(o, LV_OPA_50, 0);
+        lv_obj_set_style_border_width(o, 1, 0);
+        lv_obj_set_style_border_color(o, lv_color_hex(0x8A91A3), 0);
+        lv_obj_set_style_border_opa(o, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        return o;
+    }
+    lv_obj_t *o = lv_image_create(p);
+    lv_obj_remove_style_all(o);
+    lv_image_set_src(o, dsc);
+    lv_obj_set_pos(o, jint(w, "x", 0), jint(w, "y", 0));
+    lv_obj_set_size(o, dsc->header.w, dsc->header.h);
+    int opa = jint(w, "opa", 100);
+    if (opa < 100) lv_obj_set_style_opa(o, (lv_opa_t)(clampi(opa, 0, 100) * 255 / 100), 0);
+    if (jint(w, "hidden", 0)) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    return o;
+}
+
+/* ---------- погода ---------- */
+static const char *wx_text(int code, int day) {
+    int ru = !strcmp(g_lang, "ru"), uk = !strcmp(g_lang, "uk");
+#define T3(a, b, c) (ru ? (a) : uk ? (b) : (c))
+    if (code < 0) return T3("нет данных", "немає даних", "no data");
+    if (code == 0) return day ? T3("ясно", "ясно", "clear") : T3("ясная ночь", "ясна ніч", "clear night");
+    if (code <= 2) return T3("переменная облачность", "мінлива хмарність", "partly cloudy");
+    if (code == 3) return T3("пасмурно", "хмарно", "overcast");
+    if (code <= 48) return T3("туман", "туман", "fog");
+    if (code <= 57) return T3("морось", "мряка", "drizzle");
+    if (code <= 65) return T3("дождь", "дощ", "rain");
+    if (code <= 67) return T3("ледяной дождь", "крижаний дощ", "freezing rain");
+    if (code <= 77) return T3("снег", "сніг", "snow");
+    if (code <= 82) return T3("ливень", "злива", "showers");
+    if (code <= 86) return T3("снегопад", "снігопад", "snow showers");
+    return T3("гроза", "гроза", "thunderstorm");
+#undef T3
+}
+
+static void wx_circle(lv_layer_t *l, int cx, int cy, int r, lv_color_t c) {
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.bg_color = c;
+    d.radius = LV_RADIUS_CIRCLE;
+    lv_area_t a = {cx - r, cy - r, cx + r, cy + r};
+    lv_draw_rect(l, &d, &a);
+}
+
+static void wx_line(lv_layer_t *l, int x1, int y1, int x2, int y2, int w, lv_color_t c) {
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.color = c;
+    d.width = w;
+    d.round_start = d.round_end = 1;
+    d.p1.x = x1; d.p1.y = y1; d.p2.x = x2; d.p2.y = y2;
+    lv_draw_line(l, &d);
+}
+
+static void wx_cloud(lv_layer_t *l, int x, int y, int s, lv_color_t c) {   /* облако в квадрате s×s от (x, y) */
+    wx_circle(l, x + s * 34 / 100, y + s * 58 / 100, s * 20 / 100, c);
+    wx_circle(l, x + s * 55 / 100, y + s * 46 / 100, s * 26 / 100, c);
+    wx_circle(l, x + s * 74 / 100, y + s * 60 / 100, s * 17 / 100, c);
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.bg_color = c;
+    d.radius = s * 10 / 100;
+    lv_area_t a = {x + s * 16 / 100, y + s * 56 / 100, x + s * 90 / 100, y + s * 77 / 100};
+    lv_draw_rect(l, &d, &a);
+}
+
+static void wx_sun(lv_layer_t *l, int cx, int cy, int r, int day) {
+    lv_color_t c = day ? lv_color_hex(0xFFC93C) : lv_color_hex(0xDDE3F0);
+    if (!day) {   /* месяц-серп: толстая дуга с круглыми концами */
+        lv_draw_arc_dsc_t a;
+        lv_draw_arc_dsc_init(&a);
+        a.color = c;
+        a.center.x = cx;
+        a.center.y = cy;
+        a.radius = (uint16_t)(r * 85 / 100);
+        a.width = r * 42 / 100;
+        a.start_angle = 100;
+        a.end_angle = 300;
+        a.rounded = 1;
+        lv_draw_arc(l, &a);
+        return;
+    }
+    wx_circle(l, cx, cy, r * 62 / 100, c);
+    for (int i = 0; i < 8; i++) {
+        int32_t sn = lv_trigo_sin((int16_t)(i * 45)), cs = lv_trigo_cos((int16_t)(i * 45));
+        wx_line(l, cx + (sn * r * 82 / 100 >> LV_TRIGO_SHIFT), cy - (cs * r * 82 / 100 >> LV_TRIGO_SHIFT),
+                cx + (sn * r >> LV_TRIGO_SHIFT), cy - (cs * r >> LV_TRIGO_SHIFT), r / 7 > 1 ? r / 7 : 1, c);
+    }
+}
+
+static void wx_icon(lv_layer_t *l, int x, int y, int s, int code, int day) {
+    lv_color_t cloud = lv_color_hex(0xC9D3E3), rain = lv_color_hex(0x4FA3FF), snow = lv_color_hex(0xFFFFFF);
+    int lw = s / 16 > 1 ? s / 16 : 1;
+    if (code < 0) {
+        wx_cloud(l, x, y, s, lv_color_hex(0x5C6372));
+        return;
+    }
+    if (code == 0) { wx_sun(l, x + s / 2, y + s / 2, s * 40 / 100, day); return; }
+    if (code <= 2) {
+        wx_sun(l, x + s * 36 / 100, y + s * 34 / 100, s * 28 / 100, day);
+        wx_cloud(l, x + s / 10, y + s / 8, s * 9 / 10, cloud);
+        return;
+    }
+    if (code == 3) { wx_cloud(l, x, y, s, cloud); return; }
+    if (code <= 48) {
+        for (int i = 0; i < 4; i++)
+            wx_line(l, x + s / 8 + (i % 2) * s / 10, y + s * (30 + i * 15) / 100, x + s * 85 / 100, y + s * (30 + i * 15) / 100,
+                    lw, cloud);
+        return;
+    }
+    wx_cloud(l, x, y - s / 8, s, cloud);
+    if (code <= 67 || (code >= 80 && code <= 82)) {
+        int n = code >= 80 || code >= 63 ? 4 : 3;
+        for (int i = 0; i < n; i++) {
+            int bx = x + s * (28 + i * 16) / 100;
+            wx_line(l, bx, y + s * 74 / 100, bx - s / 14, y + s * 92 / 100, lw, rain);
+        }
+    } else if (code <= 86) {
+        for (int i = 0; i < 3; i++) wx_circle(l, x + s * (32 + i * 18) / 100, y + s * (78 + (i % 2) * 8) / 100, lw + 1, snow);
+    } else {   /* гроза: молния */
+        lv_draw_triangle_dsc_t t;
+        lv_draw_triangle_dsc_init(&t);
+        t.bg_color = lv_color_hex(0xFFD23F);
+        t.p[0].x = x + s * 56 / 100; t.p[0].y = y + s * 58 / 100;
+        t.p[1].x = x + s * 38 / 100; t.p[1].y = y + s * 82 / 100;
+        t.p[2].x = x + s * 54 / 100; t.p[2].y = y + s * 80 / 100;
+        lv_draw_triangle(l, &t);
+        t.p[0].x = x + s * 54 / 100; t.p[0].y = y + s * 76 / 100;
+        t.p[1].x = x + s * 46 / 100; t.p[1].y = y + s;
+        t.p[2].x = x + s * 66 / 100; t.p[2].y = y + s * 74 / 100;
+        lv_draw_triangle(l, &t);
+    }
+}
+
+static int wx_get(int city, ls_weather_t *w) {
+    memset(w, 0, sizeof *w);
+    w->code = -1;
+    if (g_port.weather && g_port.weather(city, w) && w->valid) return 1;
+    w->code = -1;
+    return 0;
+}
+
+static void on_weather_draw(lv_event_t *e) {
+    lv_obj_t *o = lv_event_get_target(e);
+    ls_dyn_t *d = (ls_dyn_t *)lv_event_get_user_data(e);
+    if (!d->icon_sz) return;
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    ls_weather_t w;
+    wx_get(d->src, &w);
+    int s = d->icon_sz;
+    int x = d->card ? a.x1 + (lv_area_get_width(&a) - s) / 2 : a.x1;
+    int y = d->card ? a.y1 : a.y1 + (lv_area_get_height(&a) - s) / 2;
+    wx_icon(lv_event_get_layer(e), x, y, s, w.code, w.is_day || !w.valid);
+}
+
+static void wx_fill(ls_dyn_t *d) {
+    ls_weather_t w;
+    int ok = wx_get(d->src, &w);
+    char b[96];
+    if (ok) snprintf(b, sizeof b, "%d°", (w.temp10 >= 0 ? w.temp10 + 5 : w.temp10 - 5) / 10);
+    else snprintf(b, sizeof b, "--°");
+    if (d->l1) lv_label_set_text(d->l1, b);
+    if (d->l2 && !d->card) {   /* строка: описание · город */
+        const char *ds = (d->secs & 1) ? wx_text(ok ? w.code : -1, w.is_day) : "";
+        const char *cs = (d->secs & 2) ? w.city : "";
+        snprintf(b, sizeof b, "%s%s%s", ds, (*ds && *cs) ? " · " : "", cs);
+        lv_label_set_text(d->l2, b);
+    } else if (d->l2) {
+        if (ok && d->card) snprintf(b, sizeof b, "%s\n%d° / %d°", wx_text(w.code, w.is_day), (w.tmax10 + (w.tmax10 >= 0 ? 5 : -5)) / 10,
+                                    (w.tmin10 + (w.tmin10 >= 0 ? 5 : -5)) / 10);
+        else snprintf(b, sizeof b, "%s", wx_text(ok ? w.code : -1, w.is_day));
+        lv_label_set_text(d->l2, b);
+    }
+    if (d->l3) lv_label_set_text(d->l3, w.city[0] ? w.city : "");
+    d->stamp = ok ? (uint32_t)(w.temp10 * 131 + w.code * 7 + w.tmax10 * 17 + w.tmin10 + w.is_day + 1) : 0;
+    lv_obj_invalidate(d->obj);
+}
+
+static void wx_line_layout(ls_dyn_t *d) {   /* строка: описание сразу за температурой, не шире блока */
+    if (d->card || !d->l2) return;
+    lv_obj_update_layout(d->obj);
+    lv_obj_align_to(d->l2, d->l1, LV_ALIGN_OUT_RIGHT_MID, d->ticks, 0);
+    lv_obj_update_layout(d->obj);
+    int room = lv_obj_get_width(d->obj) - lv_obj_get_x(d->l2);
+    lv_obj_set_width(d->l2, room > 0 ? room : 0);
+}
+
+static lv_obj_t *mk_weather(lv_obj_t *p, const lsJSON *w) {
+    lv_obj_t *o = lv_obj_create(p);
+    lv_obj_remove_style_all(o);
+    place(o, w, 0);
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_update_layout(o);
+    int W = lv_obj_get_width(o), H = lv_obj_get_height(o);
+    ls_dyn_t *d = dyn_add(o, K_WEATHER);
+    if (!d) return o;
+    d->src = (uint8_t)clampi(jint(w, "city", 0), 0, LS_MAX_CITIES - 1);
+    d->card = !strcmp(jstr(w, "style", "line"), "card");
+    int size = jint(w, "size", 40);
+    d->ticks = (uint8_t)clampi(size / 3, 2, 255);   /* отступ описания в «строке» */
+    const char *fn = jstr(w, "font", "medium");
+    lv_color_t col = jcolor(w, "color", 0xFFFFFF), mut = jcolor(w, "muted", 0x9AA3B5);
+    int show_icon = jint(w, "icon", 1), show_desc = jint(w, "desc", 1), show_city = jint(w, "city_name", 0);
+    if (d->card) {
+        d->icon_sz = show_icon ? (uint8_t)clampi(H * 38 / 100, 8, 250) : 0;
+        int y = d->icon_sz + (show_icon ? H / 30 : 0);
+        d->l1 = lv_label_create(o);
+        lv_obj_remove_style_all(d->l1);
+        lv_obj_set_style_text_font(d->l1, font_get(fn, size), 0);
+        lv_obj_set_style_text_color(d->l1, col, 0);
+        lv_obj_set_width(d->l1, W);
+        lv_obj_set_style_text_align(d->l1, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_y(d->l1, y);
+        y += lv_font_get_line_height(font_get(fn, size));
+        if (show_desc) {
+            d->l2 = lv_label_create(o);
+            lv_obj_remove_style_all(d->l2);
+            lv_obj_set_style_text_font(d->l2, font_get("medium", size * 40 / 100 > 8 ? size * 40 / 100 : 8), 0);
+            lv_obj_set_style_text_color(d->l2, mut, 0);
+            lv_obj_set_width(d->l2, W);
+            lv_obj_set_style_text_align(d->l2, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_y(d->l2, y);
+        }
+        if (show_city) {
+            d->l3 = lv_label_create(o);
+            lv_obj_remove_style_all(d->l3);
+            lv_obj_set_style_text_font(d->l3, font_get("bold", size * 36 / 100 > 8 ? size * 36 / 100 : 8), 0);
+            lv_obj_set_style_text_color(d->l3, col, 0);
+            lv_obj_set_width(d->l3, W);
+            lv_obj_set_style_text_align(d->l3, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_align(d->l3, LV_ALIGN_BOTTOM_MID, 0, 0);
+        }
+    } else {
+        d->icon_sz = show_icon ? (uint8_t)clampi(H, 8, 250) : 0;
+        int x = d->icon_sz ? d->icon_sz + H / 6 : 0;
+        d->l1 = lv_label_create(o);
+        lv_obj_remove_style_all(d->l1);
+        lv_obj_set_style_text_font(d->l1, font_get(fn, size), 0);
+        lv_obj_set_style_text_color(d->l1, col, 0);
+        lv_obj_align(d->l1, LV_ALIGN_LEFT_MID, x, 0);
+        if (show_desc || show_city) {
+            d->l2 = lv_label_create(o);
+            lv_obj_remove_style_all(d->l2);
+            lv_obj_set_style_text_font(d->l2, font_get("medium", size * 45 / 100 > 8 ? size * 45 / 100 : 8), 0);
+            lv_obj_set_style_text_color(d->l2, mut, 0);
+            lv_label_set_long_mode(d->l2, LV_LABEL_LONG_DOT);
+            d->l3 = NULL;
+            d->secs = (uint8_t)((show_desc ? 1 : 0) | (show_city ? 2 : 0));
+        }
+    }
+    lv_obj_add_event_cb(o, on_weather_draw, LV_EVENT_DRAW_MAIN_END, d);
+    wx_fill(d);
+    wx_line_layout(d);
+    return o;
+}
+
 static lv_obj_t *mk_widget(lv_obj_t *scr, const lsJSON *w) {
     const char *type = jstr(w, "type", "");
     lv_obj_t *o = NULL;
@@ -577,6 +907,9 @@ static lv_obj_t *mk_widget(lv_obj_t *scr, const lsJSON *w) {
     else if (!strcmp(type, "arc")) o = mk_arc(scr, w);
     else if (!strcmp(type, "slider")) o = mk_slider(scr, w);
     else if (!strcmp(type, "analog")) o = mk_analog(scr, w);
+    else if (!strcmp(type, "icon")) o = mk_icon(scr, w);
+    else if (!strcmp(type, "image")) o = mk_image(scr, w);
+    else if (!strcmp(type, "weather")) o = mk_weather(scr, w);
     else { say("ls: неизвестный виджет «%s»", type); return NULL; }
     const lsJSON *link = lsJSON_GetObjectItemCaseSensitive(w, "link");
     if (o && link && jstr(link, "to", NULL) && *jstr(link, "to", "")) {
@@ -694,6 +1027,16 @@ void ls_tick(void) {
         case K_DATE: dyn_text(d, &t, known); break;
         case K_ARC: lv_arc_set_value(d->obj, known || d->src == SRC_BRIGHT ? src_value(d->src, &t, 0) : 0); break;
         case K_ANALOG: lv_obj_invalidate(d->obj); break;
+        case K_WEATHER: {
+            ls_weather_t wx;
+            int ok = wx_get(d->src, &wx);
+            uint32_t st = ok ? (uint32_t)(wx.temp10 * 131 + wx.code * 7 + wx.tmax10 * 17 + wx.tmin10 + wx.is_day + 1) : 0;
+            if (st != d->stamp) {
+                wx_fill(d);
+                wx_line_layout(d);
+            }
+            break;
+        }
         case K_SLIDER:
             if (lv_slider_get_value(d->obj) != g_bright && !lv_obj_has_state(d->obj, LV_STATE_PRESSED))
                 lv_slider_set_value(d->obj, g_bright, LV_ANIM_OFF);
