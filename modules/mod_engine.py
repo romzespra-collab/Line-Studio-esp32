@@ -1,6 +1,7 @@
-"""mod_engine.py  v0.1.0 — превью: движок платы (engine/bin/line_engine.dll / .so) через ctypes.
+"""mod_engine.py  v0.2.0 — превью: движок платы (engine/bin/line_engine.dll / .so) через ctypes.
 
 Журнал:
+v0.2.0: шрифт значков, картинки (image / image_remove), погода (weather).
 v0.1.0: первая версия — кадр RGB565, касание мышью, время (живое / замороженное), рамки блоков.
 
 Это не макет: внутри DLL тот же LVGL и тот же рантайм (runtime/ls_runtime.c), что в прошивке.
@@ -11,7 +12,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONTS_DIR = os.path.join(ROOT, "fonts")
-FONT_FILES = {"medium": "Montserrat-Medium.ttf", "bold": "Montserrat-Bold.ttf", "light": "Montserrat-Light.ttf"}
+FONT_FILES = {"medium": "Montserrat-Medium.ttf", "bold": "Montserrat-Bold.ttf", "light": "Montserrat-Light.ttf",
+              "icons": "MaterialIcons-Regular.ttf"}
 
 
 def lib_path():
@@ -31,6 +33,9 @@ class Engine:
         L.le_time.argtypes = (ctypes.c_longlong, ctypes.c_longlong)
         L.le_font.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int)
         L.le_rect.argtypes = (ctypes.c_char_p, ctypes.POINTER(ctypes.c_int))
+        L.le_image.argtypes = (ctypes.c_char_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+        L.le_image_remove.argtypes = (ctypes.c_char_p,)
+        L.le_weather.argtypes = (ctypes.c_int,) * 9 + (ctypes.c_char_p,)
         self.w = self.h = 0
         self._fonts = False
         self.version = L.le_version().decode()
@@ -84,6 +89,18 @@ class Engine:
 
     def brightness(self):
         return self.L.le_brightness()
+
+    def image(self, key, w, h, rgb565, alpha=None):
+        data = rgb565 + (alpha or b"")
+        return self.L.le_image(key.encode(), int(w), int(h), 1 if alpha else 0, data, len(data))
+
+    def image_remove(self, key):
+        self.L.le_image_remove(key.encode())
+
+    def weather(self, city, d, name=""):
+        self.L.le_weather(int(city), int(d.get("valid", 0)), int(d.get("temp10", 0)), int(d.get("code", -1)),
+                          int(d.get("tmin10", 0)), int(d.get("tmax10", 0)), int(d.get("wind10", 0)),
+                          int(d.get("hum", 0)), int(d.get("is_day", 1)), name.encode("utf-8"))
 
     def rect(self, wid):
         r = (ctypes.c_int * 4)()

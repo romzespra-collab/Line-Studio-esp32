@@ -1,6 +1,6 @@
 chcp 65001 >nul
 @echo off
-rem build_exe.bat  v0.1.0 — собрать dist\line_studio.exe (класть в папку программы: рядом engine\, fonts\, boards\, firmware\, modules\)
+rem build_exe.bat  v0.2.0 — собрать dist\line_studio.exe (класть в папку программы: рядом engine\, fonts\, boards\, firmware\, modules\)
 cd /d "%~dp0"
 echo === [1/4] Python ===
 python --version || (echo Нет Python 3.10+ & pause & exit /b 1)

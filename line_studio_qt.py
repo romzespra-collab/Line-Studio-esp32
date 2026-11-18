@@ -1,6 +1,8 @@
-"""line_studio_qt.py  v0.1.0 — окно LineStudio (Вид 2 «Пульт», холст в центре — как PinFlow_esp32).
+"""line_studio_qt.py  v0.2.0 — окно LineStudio (Вид 2 «Пульт», холст в центре — как PinFlow_esp32).
 
 Журнал:
+v0.2.0: блоки «Значок» (выбор из 2200+ с поиском), «Картинка» (файл → в проект), «Погода» (города с поиском,
+        превью — настоящая погода с open-meteo, без сети — пример); платы CYD (ST7789 и ILI9341).
 v0.1.0: первая версия — своя рамка, шапка (значок, проект, чип, Правка/Проба/Карта, Live, отмена/повтор,
         масштаб, плата, ☀/☾, ⋯, «Залить»), плитки-счётчики, слева «Добавить» / экраны / слои, в центре холст или
         карта, справа свойства, внизу журнал и прогресс. F5 — перерисовать, Esc — «Стоп», Ctrl+S, Ctrl+T,
@@ -28,7 +30,9 @@ from app import icons, theme
 from app.int_field import IntField
 from app.window_frame import WindowFrame
 from modules import mod_build as mb
+from modules import mod_images as mim
 from modules import mod_link as ml
+from modules import mod_weather as mw
 from modules import mod_project as mp
 from modules.mod_engine import Engine
 from modules.mod_stage import MapView, Stage, rgb565_image
@@ -154,6 +158,157 @@ class Segmented(QWidget):
             b.setIcon(icons.icon(b.property("ic"), theme.P["text"], 16))
 
 
+_ICON_FAMILY = None
+
+
+def icon_family():
+    """Семейство шрифта значков (Material Icons) для показа в окне."""
+    global _ICON_FAMILY
+    if _ICON_FAMILY is None:
+        from PySide6.QtGui import QFontDatabase
+        fid = QFontDatabase.addApplicationFont(os.path.join(core.APP_ROOT, "fonts", "MaterialIcons-Regular.ttf"))
+        fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+        _ICON_FAMILY = fams[0] if fams else ""
+    return _ICON_FAMILY
+
+
+class IconPicker(QDialog):
+    """Выбор значка: частые — с русскими словами, поиск по-русски и по-английски по всем 2200+."""
+
+    def __init__(self, parent, current=""):
+        super().__init__(parent)
+        self.setWindowTitle("Значок")
+        self.choice = current
+        v = QVBoxLayout(self)
+        self.q = QLineEdit()
+        self.q.setPlaceholderText("Поиск: солнце, wifi, батарея, home…")
+        self.q.textChanged.connect(self.fill)
+        v.addWidget(self.q)
+        self.lst = QListWidget()
+        self.lst.setViewMode(QListWidget.IconMode)
+        self.lst.setResizeMode(QListWidget.Adjust)
+        self.lst.setGridSize(QSize(96, 84))
+        self.lst.setIconSize(QSize(36, 36))
+        self.lst.setUniformItemSizes(True)
+        self.lst.setWordWrap(True)
+        self.lst.itemDoubleClicked.connect(lambda it: self._take(it))
+        v.addWidget(self.lst, 1)
+        self.info = lab("", "hint")
+        v.addWidget(self.info)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(lambda: self._take(self.lst.currentItem()))
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self.resize(760, 560)
+        self.fill("")
+
+    def _pix(self, name):
+        from PySide6.QtGui import QPixmap
+        pm = QPixmap(72, 72)
+        pm.fill(Qt.transparent)
+        pa = QPainter(pm)
+        f = QFont(icon_family())
+        f.setPixelSize(60)
+        pa.setFont(f)
+        pa.setPen(QColor(theme.P["text"]))
+        pa.drawText(pm.rect(), Qt.AlignCenter, mp.icon_char(name))
+        pa.end()
+        from PySide6.QtGui import QIcon
+        return QIcon(pm)
+
+    def fill(self, text):
+        self.lst.clear()
+        q = text.strip().lower()
+        allicons = mp.icons()
+        if not q:
+            names = list(mp.ICON_RU)
+        else:
+            names = [n for n, ru in mp.ICON_RU.items() if q in ru or q in n]
+            names += [n for n in allicons if q in n.replace("_", " ") or q in n][:400]
+            names = list(dict.fromkeys(names))
+        for n in names[:400]:
+            it = QListWidgetItem(self._pix(n), mp.ICON_RU.get(n, n.replace("_", " ")).split()[0])
+            it.setData(Qt.UserRole, n)
+            it.setToolTip(f"{n} — {mp.ICON_RU.get(n, '')}")
+            self.lst.addItem(it)
+            if n == self.choice:
+                self.lst.setCurrentItem(it)
+        self.info.setText(f"Показано {min(len(names), 400)} из {len(allicons)}. Двойной щелчок — выбрать.")
+
+    def _take(self, it):
+        if it is None:
+            return
+        self.choice = it.data(Qt.UserRole)
+        self.accept()
+
+
+class CityDialog(QDialog):
+    """Поиск города (open-meteo geocoding)."""
+
+    def __init__(self, parent, lang="ru"):
+        super().__init__(parent)
+        self.setWindowTitle("Город для погоды")
+        self.lang = lang
+        self.result = None
+        v = QVBoxLayout(self)
+        row = QHBoxLayout()
+        self.q = QLineEdit()
+        self.q.setPlaceholderText("Название города")
+        self.q.returnPressed.connect(self.search)
+        b = QPushButton("Найти")
+        b.clicked.connect(self.search)
+        row.addWidget(self.q, 1)
+        row.addWidget(b)
+        v.addLayout(row)
+        self.lst = QListWidget()
+        self.lst.itemDoubleClicked.connect(lambda it: self._take())
+        v.addWidget(self.lst, 1)
+        man = QHBoxLayout()
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("или вручную: название")
+        self.lat = QLineEdit()
+        self.lat.setPlaceholderText("широта")
+        self.lon = QLineEdit()
+        self.lon.setPlaceholderText("долгота")
+        for w_ in (self.name, self.lat, self.lon):
+            man.addWidget(w_)
+        v.addLayout(man)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self._take)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self.resize(560, 380)
+
+    def search(self):
+        self.lst.clear()
+        try:
+            res = mw.search(self.q.text().strip(), self.lang)
+        except Exception as e:                         # noqa: BLE001
+            self.lst.addItem(f"Нет связи с open-meteo: {e} — введите широту и долготу вручную")
+            return
+        if not res:
+            self.lst.addItem("Ничего не нашлось")
+        for r in res:
+            it = QListWidgetItem(f"{r['name']} — {r['where']}  ({r['lat']}, {r['lon']})")
+            it.setData(Qt.UserRole, r)
+            self.lst.addItem(it)
+        self.lst.setCurrentRow(0)
+
+    def _take(self):
+        it = self.lst.currentItem()
+        r = it.data(Qt.UserRole) if it else None
+        if r:
+            self.result = {"name": r["name"], "lat": r["lat"], "lon": r["lon"]}
+        else:
+            try:
+                self.result = {"name": self.name.text().strip() or "Город", "lat": float(self.lat.text().replace(",", ".")),
+                               "lon": float(self.lon.text().replace(",", "."))}
+            except ValueError:
+                QMessageBox.information(self, "Город", "Выберите город из списка или введите широту и долготу числами.")
+                return
+        self.accept()
+
+
 # ---------- окно ----------
 class MainWindow(QWidget):
     def __init__(self):
@@ -184,6 +339,9 @@ class MainWindow(QWidget):
         self.last_build = ""
         self._live_due = 0.0
         self._scanning = False
+        self._img_sent = {}           # id блока → ключ картинки в движке
+        self.weather = {}             # номер города → данные
+        self._wx_busy = False
         self.setObjectName("root")
         self.setWindowTitle(f"{core.APP_NAME} — v{core.VERSION} · Qt6")
         self.setWindowIcon(theme.app_icon())
@@ -207,6 +365,9 @@ class MainWindow(QWidget):
         self.t_ports.start()
         self.t_live = QTimer(self, interval=120, timeout=self._live_tick)
         self.t_live.start()
+        self.t_wx = QTimer(self, interval=15 * 60 * 1000, timeout=self.fetch_weather)
+        self.t_wx.start()
+        QTimer.singleShot(800, self.fetch_weather)
         self._shortcuts()
         QTimer.singleShot(300, self._scan_ports)
         log.info(f"✓ {core.APP_NAME} v{core.VERSION}: движок превью {self.engine.version if self.engine else '—'}, "
@@ -561,6 +722,10 @@ class MainWindow(QWidget):
         if self.board and self.project.get("board") != self.board["id"]:
             self.project["board"] = self.board["id"]
         self.hist = mp.History()
+        if self.engine:
+            for key in set(self._img_sent.values()):
+                self.engine.image_remove(key)
+        self._img_sent = {}
         self.cur_screen = self.project.get("home")
         self.sel = None
         self.cfg["project"] = pid
@@ -572,12 +737,15 @@ class MainWindow(QWidget):
         self.stage.fit()
         self.mapv._fit_done = False
         self.refresh_all()
+        if hasattr(self, "t_wx"):
+            self.fetch_weather()
 
     def render(self):
         """Проект → движок → картинка; рамки блоков текущего экрана."""
         if not self.engine or not self.board:
             return
         if self._dirty_engine:
+            self._sync_images()
             r, err = self.engine.load(mp.runtime_json(self.project))
             if r:
                 log.info(f"✗ превью: {err}")
@@ -597,6 +765,110 @@ class MainWindow(QWidget):
         self.all_rects[self.cur_screen] = dict(self.rects)
         if self.mode == "map" and self._dirty_thumbs:
             self.render_thumbs()
+
+    def assets_dir(self):
+        return mim.assets_dir(core.PROJECTS, self.pid)
+
+    def _sync_images(self):
+        """Картинки блоков → движок (под размер блока); старые ключи — убрать."""
+        assets = self.project.get("assets", {})
+        live = {}
+        for s in self.project["screens"]:
+            for w in s["widgets"]:
+                if w.get("type") == "image" and w.get("asset") in assets:
+                    live[w["id"]] = (mp.image_key(w), w)
+        for wid, key in list(self._img_sent.items()):
+            if wid not in live or live[wid][0] != key:
+                if key not in [k for k, _ in live.values()]:
+                    self.engine.image_remove(key)
+                del self._img_sent[wid]
+        for wid, (key, w) in live.items():
+            if self._img_sent.get(wid) == key:
+                continue
+            if key not in self._img_sent.values():
+                rgb, alpha = mim.render(os.path.join(self.assets_dir(), assets[w["asset"]]["file"]), w["w"], w["h"],
+                                        w.get("fit", "cover"))
+                if rgb is None:
+                    continue
+                self.engine.image(key, w["w"], w["h"], rgb, alpha)
+            self._img_sent[wid] = key
+
+    def fetch_weather(self):
+        """Погода городов проекта для превью (в потоке). Нет сети — пример."""
+        if self._wx_busy or not self.engine or not self.project:
+            return
+        self._wx_busy = True
+        cities = list(self.project["settings"].get("cities") or [])
+
+        def job():
+            got, err = {}, None
+            for i, c in enumerate(cities[:8]):
+                try:
+                    got[i] = mw.current(c["lat"], c["lon"])
+                except Exception as e:                 # noqa: BLE001
+                    err = e
+            core.log_q.put(lambda: self._weather_done(cities, got, err))
+        threading.Thread(target=job, daemon=True).start()
+
+    def _weather_done(self, cities, got, err):
+        self._wx_busy = False
+        for i, c in enumerate(cities[:8]):
+            d = got.get(i) or dict(mw.DEMO)
+            self.weather[i] = d
+            self.engine.weather(i, d, c.get("name", ""))
+        if err and "weather" in mp.used_types(self.project):
+            log.info(f"⚠ погода для превью: нет связи с open-meteo ({err}) — показан пример")
+        elif got:
+            c0 = got.get(0)
+            if c0:
+                log.info(f"✓ погода: {cities[0]['name']} {c0['temp10'] / 10:+.0f}° (код {c0['code']})")
+        self._dirty_engine = True
+        self.render()
+
+    def add_city(self):
+        d = CityDialog(self, self.project["settings"].get("lang", "ru"))
+        if d.exec() == QDialog.Accepted and d.result:
+            self.begin_change()
+            self.project["settings"].setdefault("cities", []).append(d.result)
+            self._dirty_save = True
+            self.refresh_props()
+            self.fetch_weather()
+            log.info(f"✓ город погоды: {d.result['name']}")
+
+    def remove_city(self, i):
+        cities = self.project["settings"].get("cities", [])
+        if len(cities) <= 1:
+            QMessageBox.information(self, "Города", "Нужен хотя бы один город.")
+            return
+        self.begin_change()
+        cities.pop(i)
+        for s in self.project["screens"]:
+            for w in s["widgets"]:
+                if w.get("type") == "weather" and w.get("city", 0) >= len(cities):
+                    w["city"] = 0
+        self.changed("prop")
+        self.refresh_props()
+        self.fetch_weather()
+
+    def pick_image(self, w=None):
+        fn, _ = QFileDialog.getOpenFileName(self, "Картинка", os.path.expanduser("~"),
+                                            "Картинки (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if not fn:
+            return None
+        aid = mp.new_id("a")
+        try:
+            file, iw, ih = mim.import_file(fn, core.PROJECTS, self.pid, aid)
+        except Exception as e:                         # noqa: BLE001
+            QMessageBox.warning(self, "Картинка", str(e))
+            return None
+        self.begin_change()
+        self.project.setdefault("assets", {})[aid] = {"name": os.path.basename(fn), "file": file, "w": iw, "h": ih}
+        if w is not None:
+            w["asset"] = aid
+        self._dirty_save = True
+        core.save_project(self.pid, self.project)
+        log.info(f"✓ картинка «{os.path.basename(fn)}» {iw}×{ih} — в папке проекта")
+        return aid
 
     def render_thumbs(self):
         if not self.engine:
@@ -855,11 +1127,22 @@ class MainWindow(QWidget):
             w["w"] = min(W, max(w["w"], W * 2 // 3))
         w["x"] = (W - w["w"]) // 2
         w["y"] = (H - (w["h"] or c["defaults"].get("size", 40))) // 2
+        if kind == "image":
+            aid = self.pick_image()
+            if not aid:
+                return
+            a = self.project["assets"][aid]
+            k = min(1.0, (W * 0.6) / a["w"], (H * 0.6) / a["h"])
+            w["w"], w["h"] = max(8, int(a["w"] * k)), max(8, int(a["h"] * k))
+            w["x"], w["y"] = (W - w["w"]) // 2, (H - w["h"]) // 2
+            w["asset"] = aid
         self.begin_change()
         s["widgets"].append(w)
         self.sel = w["id"]
         self.changed("structure")
         log.info(f"✓ добавлено: {c['name']} на «{s['name']}»")
+        if kind == "weather" and not self.project["settings"].get("wifi"):
+            log.info("⚠ погоде на плате нужен Wi-Fi: включите Wi-Fi и задайте сеть (свойства проекта)")
 
     def delete_selected(self):
         s, w = mp.find_widget(self.project, self.sel)
@@ -1033,6 +1316,54 @@ class MainWindow(QWidget):
                 e.addItem(t, k)
             i = e.findData(val)
             e.setCurrentIndex(max(0, i))
+            e.currentIndexChanged.connect(lambda i, e=e: on_set(key, e.itemData(i)))
+        elif kind == "iconpick":
+            e = QPushButton(f"  {val or '—'}")
+            fam = icon_family()
+            e.setToolTip("Выбрать значок")
+            if fam:
+                from PySide6.QtGui import QIcon, QPixmap
+                pm = QPixmap(40, 40)
+                pm.fill(Qt.transparent)
+                pa = QPainter(pm)
+                f = QFont(fam)
+                f.setPixelSize(34)
+                pa.setFont(f)
+                pa.setPen(QColor(theme.P["text"]))
+                pa.drawText(pm.rect(), Qt.AlignCenter, mp.icon_char(val or ""))
+                pa.end()
+                e.setIcon(QIcon(pm))
+                e.setIconSize(QSize(20, 20))
+
+            def pick(_=False):
+                d = IconPicker(self, val or "")
+                if d.exec() == QDialog.Accepted and d.choice:
+                    on_set(key, d.choice)
+                    self.refresh_props()
+            e.clicked.connect(pick)
+        elif kind == "asset":
+            e = QComboBox()
+            e.addItem("— не выбрана —", "")
+            for aid, a in self.project.get("assets", {}).items():
+                e.addItem(f"{a.get('name', aid)}  ({a.get('w')}×{a.get('h')})", aid)
+            e.addItem("Выбрать файл…", "@pick")
+            e.setCurrentIndex(max(0, e.findData(val or "")))
+
+            def asset_set(i, e=e):
+                v = e.itemData(i)
+                if v == "@pick":
+                    aid = self.pick_image()
+                    if aid:
+                        on_set(key, aid)
+                    self.refresh_props()
+                    return
+                on_set(key, v)
+            e.currentIndexChanged.connect(asset_set)
+        elif kind == "city":
+            e = QComboBox()
+            for i, c in enumerate(self.project["settings"].get("cities", [])):
+                e.addItem(c.get("name", f"Город {i + 1}"), i)
+            e.setCurrentIndex(max(0, e.findData(int(val or 0))))
             e.currentIndexChanged.connect(lambda i, e=e: on_set(key, e.itemData(i)))
         elif kind == "format":
             e = QComboBox()
@@ -1214,7 +1545,9 @@ class MainWindow(QWidget):
             self._dirty_save = True
         name.textChanged.connect(set_name)
         f.addRow("Название", name)
-        f.addRow("Плата", lab(self.board["name"] if self.board else "—", "muted"))
+        bl = lab(self.board["short"] if self.board else "—", "muted")
+        bl.setToolTip(f"{self.board['name']} — {self.board['screen']}" if self.board else "")
+        f.addRow("Плата", bl)
         lang = QComboBox()
         for k, t in mp.LANGS:
             lang.addItem(t, k)
@@ -1249,7 +1582,7 @@ class MainWindow(QWidget):
             self._dirty_save = True
         br.valueChanged.connect(set_br)
         f.addRow("Яркость", br)
-        wifi = QCheckBox("Время по Wi-Fi (NTP)")
+        wifi = QCheckBox("время и погода")
         wifi.setChecked(bool(st.get("wifi")))
 
         def set_wifi(v):
@@ -1264,7 +1597,43 @@ class MainWindow(QWidget):
         bw.setObjectName("chip")
         bw.clicked.connect(self.wifi_dialog)
         f.addRow("", bw)
+        f = self._section("Города погоды")
+        for i, c in enumerate(st.get("cities", [])):
+            row = QHBoxLayout()
+            d = self.weather.get(i)
+            t = f"{c.get('name')}" + (f"   {d['temp10'] / 10:+.0f}°" if d else "")
+            row.addWidget(lab(t), 1)
+            bx = QToolButton()
+            bx.setIcon(icons.icon("trash", theme.P["muted"], 14))
+            bx.setToolTip("Убрать город")
+            bx.clicked.connect(lambda _=False, i=i: self.remove_city(i))
+            row.addWidget(bx)
+            f.addRow(f"{i + 1}.", row)
+        ba = QPushButton("+ Город…")
+        ba.setObjectName("chip")
+        ba.clicked.connect(self.add_city)
+        f.addRow("", ba)
+        assets = self.project.get("assets", {})
+        if assets:
+            f = self._section("Картинки проекта")
+            used = {w.get("asset") for s_ in self.project["screens"] for w in s_["widgets"]}
+            for aid, a in list(assets.items()):
+                row = QHBoxLayout()
+                row.addWidget(lab(f"{a.get('name')}  {a.get('w')}×{a.get('h')}" + ("" if aid in used else "  (не используется)")), 1)
+                if aid not in used:
+                    bx = QToolButton()
+                    bx.setIcon(icons.icon("trash", theme.P["muted"], 14))
+                    bx.setToolTip("Убрать из проекта (файл останется в папке проекта)")
+                    bx.clicked.connect(lambda _=False, aid=aid: self._drop_asset(aid))
+                    row.addWidget(bx)
+                f.addRow(row)
         wifi.setToolTip("Без Wi-Fi время ставит редактор при заливке и при Live")
+
+    def _drop_asset(self, aid):
+        self.begin_change()
+        self.project.get("assets", {}).pop(aid, None)
+        self._dirty_save = True
+        self.refresh_props()
 
     def focus_prop(self, key):
         e = getattr(self, "prop_widgets", {}).get(key)
@@ -1711,6 +2080,7 @@ class MainWindow(QWidget):
         pid = self.pid
         core.save_project(pid, self.project)
         secrets = self.secrets.get("wifi") or {}
+        assets_dir = self.assets_dir()
 
         def job():
             tools = mb.Tools(log.info)
@@ -1720,7 +2090,8 @@ class MainWindow(QWidget):
                 log.info("⏳ копия прошивки платы…")
                 mb.backup(tools, board, p, log.info, self._progress, lambda: self.cancel)
             log.info(f"⏳ сборка: {board['name']}, проект «{proj['name']}» rev {proj['rev']}")
-            sk = mb.write_sketch(proj, board, {"pid": pid, "rev": proj["rev"]}, secrets, log.info)
+            sk = mb.write_sketch(proj, board, {"pid": pid, "rev": proj["rev"], "assets_dir": assets_dir}, secrets,
+                                 log.info)
             out = mb.compile_sketch(tools, board, sk, log.info, self._progress, lambda: self.cancel, variant)
             size = 0
             for fn in os.listdir(out):

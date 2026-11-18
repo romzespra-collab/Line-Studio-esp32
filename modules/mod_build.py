@@ -1,6 +1,8 @@
-"""mod_build.py  v0.1.0 — платы, сборка прошивки и заливка: arduino-cli, ядро ESP32, шрифты, esptool.
+"""mod_build.py  v0.2.0 — платы, сборка прошивки и заливка: arduino-cli, ядро ESP32, шрифты, esptool.
 
 Журнал:
+v0.2.0: картинки в прошивку (images_data.h, RGB565 / RGB565A8 под размер блока), шрифт значков — только
+        использованные значки, погода (LS_WEATHER, города в build_info.h), платы без PSRAM.
 v0.1.0: первая версия — паспорта плат (boards/*/board.json), инструменты в своей папке tools/ (или уже
         установленное ядро Arduino15 нужной версии — чтобы не качать гигабайты второй раз), копия прошивки с
         проектом в build/<плата>/LineFirmware, урезанные шрифты (только нужные буквы), сборка, заливка, копия
@@ -27,7 +29,7 @@ CLI_VERSION = "1.3.1"
 ESP32_INDEX = "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 EXE = ".exe" if sys.platform == "win32" else ""
-FW_VERSION = "0.1.0"
+FW_VERSION = "0.2.0"
 
 
 class BuildError(Exception):
@@ -221,7 +223,7 @@ BASE_CHARS = set(chr(c) for c in range(0x20, 0x7F)) | set(chr(c) for c in range(
 
 
 def subset_font(src, chars):
-    """TTF только с нужными буквами (fontTools). Нет fontTools — весь файл."""
+    """TTF только с нужными буквами (fontTools). Нет fontTools — весь файл (значки — 350 КБ)."""
     data = open(src, "rb").read()
     try:
         from fontTools import subset
@@ -265,30 +267,74 @@ def write_sketch(project, board, meta, secrets=None, log=print):
              "#include \"ls_runtime.h\""]
     reg = []
     total = 0
+    icons = mp.used_icons(project)
     for name in sorted(mp.used_fonts(project)):
         fn = FONT_FILES.get(name)
         if not fn:
             continue
-        data = subset_font(os.path.join(FONTS_DIR, fn), chars)
+        data = subset_font(os.path.join(FONTS_DIR, fn), icons if name == "icons" else chars)
         total += len(data)
         lines.append(f"static const uint8_t ls_font_{name}[] = {{\n{c_bytes(data)}\n}};")
         reg.append(f"  ls_font_add(\"{name}\", ls_font_{name}, sizeof ls_font_{name});")
     lines.append("static void ls_fonts_register() {\n" + "\n".join(reg) + "\n}")
     open(os.path.join(sk, "fonts_data.h"), "w", encoding="utf-8").write("\n".join(lines) + "\n")
     log(f"✓ шрифты: {', '.join(sorted(mp.used_fonts(project)))} — {total // 1024} КБ")
+    write_images(project, sk, meta.get("assets_dir", ""), log)
     st = project.get("settings", {})
     wifi = bool(st.get("wifi")) and secrets and secrets.get("ssid")
+    weather = bool(wifi) and "weather" in mp.used_types(project)
+    cities = st.get("cities") or mp.CITIES_DEFAULT
+    city_c = ", ".join(f"{{{c_str(c.get('name', ''))}, {float(c.get('lat', 0)):.4f}f, {float(c.get('lon', 0)):.4f}f}}"
+                       for c in cities[:8])
     open(os.path.join(sk, "build_info.h"), "w", encoding="utf-8").write(
         "// Сделано LineStudio — не править руками.\n#pragma once\n"
         f"#define LS_PROJECT_ID {c_str(meta.get('pid', '-'))}\n#define LS_PROJECT_REV {int(meta.get('rev', 0))}\n"
         f"#define LS_TZ {c_str(st.get('tz', 'UTC0'))}\n#define LS_BRIGHT {int(st.get('brightness', 80))}\n"
-        f"#define LS_WIFI {1 if wifi else 0}\n#define LS_BUILT {c_str(time.strftime('%Y-%m-%dT%H:%M'))}\n")
+        f"#define LS_WIFI {1 if wifi else 0}\n#define LS_WEATHER {1 if weather else 0}\n"
+        f"#define LS_CITIES {{{city_c}}}\n#define LS_BUILT {c_str(time.strftime('%Y-%m-%dT%H:%M'))}\n")
+    if "weather" in mp.used_types(project) and not weather:
+        log("⚠ погода есть, а Wi-Fi нет (или не задана сеть) — на плате будет «нет данных»")
     net = os.path.join(sk, "wifi_net.h")
     if wifi:
         with open(net, "w", encoding="utf-8") as f:
             f.write("// Wi-Fi платы — только для этой сборки, в git не попадает.\n#pragma once\n"
                     f"#define LS_WIFI_SSID {c_str(secrets['ssid'])}\n#define LS_WIFI_PASS {c_str(secrets.get('password', ''))}\n")
     return sk
+
+
+def write_images(project, sk, assets_dir, log=print):
+    """images_data.h: каждая картинка — под размер своего блока (одинаковые — один раз)."""
+    from . import mod_images
+    from . import mod_project as mp
+    lines = ["// Сделано LineStudio: картинки проекта под размер блоков — не править руками.", "#pragma once",
+             "#include \"ls_runtime.h\""]
+    reg, done, total = [], {}, 0
+    assets = project.get("assets", {})
+    for s in project.get("screens", []):
+        for w in s.get("widgets", []):
+            if w.get("type") != "image" or w.get("asset") not in assets:
+                continue
+            key = mp.image_key(w)
+            if key in done:
+                continue
+            path = os.path.join(assets_dir, assets[w["asset"]]["file"])
+            rgb, alpha = mod_images.render(path, w["w"], w["h"], w.get("fit", "cover"))
+            if rgb is None:
+                log(f"⚠ картинка «{assets[w['asset']].get('name')}» не читается — пропущена")
+                continue
+            n = len(done)
+            data = rgb + (alpha or b"")
+            total += len(data)
+            cf = "LV_COLOR_FORMAT_RGB565A8" if alpha else "LV_COLOR_FORMAT_RGB565"
+            lines.append(f"static const uint8_t ls_img_{n}[] = {{\n{c_bytes(data, 32)}\n}};")
+            lines.append(f"static const lv_image_dsc_t ls_imgd_{n} = {{{{LV_IMAGE_HEADER_MAGIC, {cf}, 0, {w['w']}, "
+                         f"{w['h']}, {w['w'] * 2}, 0}}, {len(data)}, ls_img_{n}, NULL}};")
+            reg.append(f"  ls_image_add({c_str(key)}, &ls_imgd_{n});")
+            done[key] = n
+    lines.append("static void ls_images_register() {\n" + "\n".join(reg) + "\n}")
+    open(os.path.join(sk, "images_data.h"), "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    if done:
+        log(f"✓ картинки: {len(done)} — {total // 1024} КБ")
 
 
 def fqbn(board, variant=None):

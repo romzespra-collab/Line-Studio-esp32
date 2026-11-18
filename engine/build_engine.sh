@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build_engine.sh  v0.1.0 — собрать движок превью: engine/bin/line_engine.so (Linux) и line_engine.dll (Windows x64).
+# build_engine.sh  v0.2.0 — собрать движок превью: engine/bin/line_engine.so (Linux) и line_engine.dll (Windows x64).
 # Тот же LVGL (firmware/libraries/lvgl, lv_conf.h рядом) и тот же рантайм (runtime/), что уходят в прошивку.
 # Windows-DLL собирается кросс-компилятором zig (pip install ziglang) — ставить на ПК ничего не нужно.
 #   bash engine/build_engine.sh            — обе
@@ -25,6 +25,10 @@ build() {   # $1 — компилятор (с аргументами), $2 — ф
     objs="$objs $o"
   done
   wait
+  for f in $SRC; do   # ошибка компиляции — не собирать из старых объектов
+    o="$4/$(echo "$f" | tr '/' '_').o"
+    if [ ! -f "$o" ] || [ "$f" -nt "$o" ]; then echo "ОШИБКА: не скомпилирован $f"; exit 1; fi
+  done
   $1 -shared -o "$2" $objs $5
   echo "собрано: $2 ($(wc -c < "$2") байт)"
 }

@@ -31,6 +31,12 @@
 | button | text, font, size, color, text_color, radius |
 | arc | source (static, seconds, minutes, hours, day, brightness), value, thick, color, track, rotation, sweep, rounded |
 | slider | source (brightness, static), value, color, track, knob |
+| icon | icon (имя Material Icons), size, color — в рантайм уходит `glyph` (символ) |
+| image | asset (id в `assets`), fit (cover, contain, stretch) — в рантайм уходит `src` = `<asset>@<w>x<h><f>` |
+| weather | style (line, card), city (номер в settings.cities), font, size, color, muted, icon, desc, city_name |
+
+`assets`: `{"a1b2c3": {"name": "фото.png", "file": "a1b2c3.png", "w": 640, "h": 480}}` — файлы в
+`projects/<id>.assets/`. `settings.cities`: `[{"name": "Киев", "lat": 50.45, "lon": 30.52}]` (до 8).
 
 Формат времени: `{HH} {H} {hh} {h} {mm} {ss} {AMPM} {d} {dd} {M} {MM} {YYYY} {YY} {dddd} {ddd} {MMMM} {MMMMg} {MMM}`,
 `{^…}` — заглавными.
